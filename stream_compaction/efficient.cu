@@ -12,64 +12,97 @@ namespace StreamCompaction {
             return timer;
         }
 
-        __global__ void upSweepKern(int n, int* odata, int d) {
-            int k = (blockIdx.x * blockDim.x) + threadIdx.x;
+        // Original Up-sweep Down-sweep
+        //__global__ void upSweepKern(int n, int* odata, int d) {
+        //    int k = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-            if (k >= n || k % (1 << (d + 1)) != 0) {
+        //    if (k >= n || k % (1 << (d + 1)) != 0) {
+        //        return;
+        //    }
+
+        //    odata[k + (1 << (d + 1)) - 1] += odata[k + (1 << d) - 1];
+        //}
+
+        //__global__ void downSweepKern(int n, int* odata, int d) {
+        //    int k = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+        //    if (k >= n || k % (1 << (d + 1)) != 0) {
+        //        return;
+        //    }
+
+        //    int t = odata[k + (1 << d) - 1];
+        //    odata[k + (1 << d) - 1] = odata[k + (1 << (d + 1)) - 1];
+        //    odata[k + (1 << (d + 1)) - 1] += t;
+        //}
+        
+        // Part 5 upgrade
+        __global__ void upSweepKern(int n, int* data, int d) {
+            int step = 1 << (d + 1);
+            int k = blockIdx.x * blockDim.x + threadIdx.x;
+
+            int right = (k + 1) * step - 1;
+            if (right >= n) {
                 return;
             }
 
-            odata[k + (1 << (d + 1)) - 1] += odata[k + (1 << d) - 1];
+            int left = right - (step >> 1);
+            data[right] += data[left];
         }
 
-        __global__ void downSweepKern(int n, int* odata, int d) {
-            int k = (blockIdx.x * blockDim.x) + threadIdx.x;
+        __global__ void downSweepKern(int n, int* data, int d) {
+            int step = 1 << (d + 1);
+            int k = blockIdx.x * blockDim.x + threadIdx.x;
 
-            if (k >= n || k % (1 << (d + 1)) != 0) {
+            int right = (k + 1) * step - 1;
+            if (right >= n) {
                 return;
             }
 
-            int t = odata[k + (1 << d) - 1];
-            odata[k + (1 << d) - 1] = odata[k + (1 << (d + 1)) - 1];
-            odata[k + (1 << (d + 1)) - 1] += t;
+            int left = right - (step >> 1);
+            int t = data[left];
+            data[left] = data[right];
+            data[right] += t;
         }
 
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
-        void scan(int n, int *odata, const int *idata, bool time) {
+        void scan(int n, int* odata, const int* idata, bool time) {
+            if (n <= 0) {
+                return;
+            }
             int logn = ilog2ceil(n);
             int new_n = 1 << logn;
 
-            int* dev_buffer;
-
-            cudaMalloc((void**)&dev_buffer, new_n * sizeof(int));
+            int* dev_buffer = nullptr;
+            cudaMalloc(&dev_buffer, new_n * sizeof(int));
             cudaMemset(dev_buffer, 0, new_n * sizeof(int));
             cudaMemcpy(dev_buffer, idata, n * sizeof(int), cudaMemcpyHostToDevice);
 
-            int blockSize = 128;
-            dim3 blockNum((new_n + blockSize - 1) / blockSize);
+            const int blockSize = 128;
 
             if (time) timer().startGpuTimer();
-            // TODO
-            // Up-Sweep
-            for (int d = 0; d <= logn - 1; d++) {
-                upSweepKern<<<blockNum, blockSize>>>(new_n, dev_buffer, d);
-                cudaDeviceSynchronize();
+
+            for (int d = 0; d <= logn - 1; ++d) {
+                int step = 1 << (d + 1);
+                int thr = new_n / step;
+                dim3 grid = dim3((thr + blockSize - 1) / blockSize);
+                upSweepKern<<<grid, blockSize>>>(new_n, dev_buffer, d);
             }
 
-            cudaMemset(&dev_buffer[new_n - 1], 0, sizeof(int));
+            cudaMemset(dev_buffer + (new_n - 1), 0, sizeof(int));
 
-            // Down-Sweep
-            for (int d = logn - 1; d >= 0; d--) {
-                downSweepKern<<<blockNum, blockSize>>>(new_n, dev_buffer, d);
-                cudaDeviceSynchronize();
+            for (int d = logn - 1; d >= 0; --d) {
+                int step = 1 << (d + 1);
+                int thr = new_n / step;
+                dim3 grid = dim3((thr + blockSize - 1) / blockSize);
+                downSweepKern<<<grid, blockSize>>>(new_n, dev_buffer, d);
             }
 
+            cudaDeviceSynchronize();
             if (time) timer().endGpuTimer();
 
             cudaMemcpy(odata, dev_buffer, n * sizeof(int), cudaMemcpyDeviceToHost);
-
             cudaFree(dev_buffer);
         }
 
