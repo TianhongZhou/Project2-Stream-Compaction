@@ -37,7 +37,7 @@ namespace StreamCompaction {
         /**
          * Performs prefix-sum (aka scan) on idata, storing the result into odata.
          */
-        void scan(int n, int *odata, const int *idata) {
+        void scan(int n, int *odata, const int *idata, bool time) {
             int logn = ilog2ceil(n);
             int new_n = 1 << logn;
 
@@ -50,21 +50,23 @@ namespace StreamCompaction {
             int blockSize = 128;
             dim3 blockNum((new_n + blockSize - 1) / blockSize);
 
-            timer().startGpuTimer();
+            if (time) timer().startGpuTimer();
             // TODO
             // Up-Sweep
             for (int d = 0; d <= logn - 1; d++) {
                 upSweepKern<<<blockNum, blockSize>>>(new_n, dev_buffer, d);
+                cudaDeviceSynchronize();
             }
 
             cudaMemset(&dev_buffer[new_n - 1], 0, sizeof(int));
 
             // Down-Sweep
             for (int d = logn - 1; d >= 0; d--) {
-                downSweepKern<<<blockNum, blockSize >>>(new_n, dev_buffer, d);
+                downSweepKern<<<blockNum, blockSize>>>(new_n, dev_buffer, d);
+                cudaDeviceSynchronize();
             }
 
-            timer().endGpuTimer();
+            if (time) timer().endGpuTimer();
 
             cudaMemcpy(odata, dev_buffer, n * sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -81,10 +83,49 @@ namespace StreamCompaction {
          * @returns      The number of elements remaining after compaction.
          */
         int compact(int n, int *odata, const int *idata) {
+            int* dev_idata;
+            int* dev_odata;
+            int* dev_bool;
+            int* dev_indicies;
+
+            cudaMalloc((void**)&dev_idata, n * sizeof(int));
+            cudaMalloc((void**)&dev_odata, n * sizeof(int));
+            cudaMalloc((void**)&dev_bool, n * sizeof(int));
+            cudaMalloc((void**)&dev_indicies, n * sizeof(int));
+
+            cudaMemcpy(dev_idata, idata, n * sizeof(int), cudaMemcpyHostToDevice);
+
+            int blockSize = 128;
+            dim3 blockNum((n + blockSize - 1) / blockSize);
+
             timer().startGpuTimer();
             // TODO
+            StreamCompaction::Common::kernMapToBoolean<<<blockNum, blockSize>>>(n, dev_bool, dev_idata);
+            cudaDeviceSynchronize();
+
+            scan(n, dev_indicies, dev_bool, false);
+            cudaDeviceSynchronize();
+
+            StreamCompaction::Common::kernScatter<<<blockNum, blockSize>>>(n, dev_odata, dev_idata, dev_bool, dev_indicies);
+            cudaDeviceSynchronize();
+
             timer().endGpuTimer();
-            return -1;
+
+            int lastBool;
+            int lastIndex;
+
+            cudaMemcpy(&lastBool, dev_bool + n - 1, sizeof(int), cudaMemcpyDeviceToHost);
+            cudaMemcpy(&lastIndex, dev_indicies + n - 1, sizeof(int), cudaMemcpyDeviceToHost);
+
+            int count = lastBool + lastIndex;
+            cudaMemcpy(odata, dev_odata, count * sizeof(int), cudaMemcpyDeviceToHost);
+
+            cudaFree(dev_odata);
+            cudaFree(dev_idata);
+            cudaFree(dev_bool);
+            cudaFree(dev_indicies);
+
+            return count;
         }
     }
 }
