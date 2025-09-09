@@ -57,17 +57,17 @@ namespace StreamCompaction {
             timer().startCpuTimer();
             // TODO
             int count = 0;
-            // map
+            // Map
             for (int i = 0; i < n; i++) {
                 binary[i] = idata[i] == 0 ? 0 : 1;
                 count += binary[i];
             }
-            // scan
+            // Scan
             scanResult[0] = 0;
             for (int i = 1; i < n; i++) {
                 scanResult[i] = scanResult[i - 1] + binary[i - 1];
             }
-            // scatter
+            // Scatter
             for (int i = 0; i < n; i++) {
                 if (binary[i]) {
                     int index = scanResult[i];
