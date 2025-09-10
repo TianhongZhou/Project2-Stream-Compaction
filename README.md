@@ -153,3 +153,6 @@ This project aims to let us be familiar with useful parallel algorithms such as 
    elapsed time: 5.36608ms    (CUDA Measured)
     [   0   0   1   2   3   3   6   9  19  25  26  31  45 ]
 ```
+
+### CMakeLists
+Add radix.h and radix.cu
